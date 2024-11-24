@@ -7,41 +7,43 @@ import subprocess
 import re
 import platform
 
-
 def get_local_mac(interface):
-    if platform.system() == "Darwin":  # macOS
-        try:
-            result = subprocess.check_output(["ifconfig", interface]).decode("utf-8")
-            mac_address = re.search(r"ether\s([0-9a-fA-F]{2}(:[0-9a-fA-F]{2}){5})", result)
-            if mac_address:
-                return mac_address.group(1)
-            else:
-                print(f"[!] Endereço MAC não encontrado para a interface {interface}.")
-                return None
-        except subprocess.CalledProcessError:
-            print(f"[!] Erro ao executar ifconfig para a interface {interface}.")
-            return None
-    else:
+    """
+    Obtém o endereço MAC local de uma interface de rede no Arch Linux.
+    """
+    # Verifica se o sistema é Linux
+    if platform.system() == "Linux": 
         interface_path = f'/sys/class/net/{interface}/address'
         if os.path.exists(interface_path):
-            with open(interface_path) as f:
-                return f.read().strip()
+            try:
+                with open(interface_path) as f:
+                    return f.read().strip()
+            except OSError as e:
+                print(f"[!] Erro ao acessar o arquivo da interface {interface}: {e}")
+                return None
         else:
             print(f"[!] Interface {interface} não encontrada.")
             return None
+    else:
+        print(f"[!] Sistema operacional não suportado: {platform.system()}")
+        return None
 
 def get_mac(ip):
-    
     """
-    Retorna o endereço MAC correspondente ao IP usando o comando arp.
-    """ 
-    result = subprocess.check_output(['arp', '-n', ip]).decode("utf-8")
-    mac_address = re.search(r'([0-9a-fA-F]{2}(:[0-9a-fA-F]{2}){5})', result)
-
-    if mac_address:
-        return mac_address.group(0) # Exibe o endereço MAC
-    else:
+    Retorna o endereço MAC correspondente ao IP usando o comando `ip neigh`.
+    """
+    try:
+        result = subprocess.check_output(['ip', 'neigh'], stderr=subprocess.DEVNULL).decode("utf-8")
+        for line in result.splitlines():
+            if ip in line:
+                mac_address = re.search(r'([0-9a-fA-F]{2}(:[0-9a-fA-F]{2}){5})', line)
+                if mac_address:
+                    return mac_address.group(0)  # Exibe o endereço MAC
         print("Endereço MAC não encontrado")
+        return None
+    except subprocess.CalledProcessError as e:
+        print(f"[!] Erro ao executar 'ip neigh': {e}")
+        return None
 
 def build_arp_packet(src_mac, dst_mac, src_ip, dst_ip, opcode=2):
     """
