@@ -1,76 +1,135 @@
+#!/usr/bin/python3
+
+import sys
 import socket
 import struct
 import datetime
-from typing import Tuple
 
-# Função para converter endereço IP
-def ip_to_str(address: bytes) -> str:
-    return '.'.join(map(str, address))
 
-# Função para obter o nome do host a partir do IP
-def get_host_name(ip: str) -> str:
+def decode_dns(data):
     try:
-        return socket.gethostbyaddr(ip)[0]
-    except socket.herror:
-        return "Desconhecido"
+        query_name = ""
+        offset = 12  # DNS header offfset
+        while True:
+            length = data[offset]
+            if length == 0:
+                break
+            query_name += data[offset + 1:offset + 1 + length].decode() + "."
+            offset += length + 1
+            
+        return query_name[:-1]  # Retira o último "."
+    except:
+        return None
 
-# Função para extrair o cabeçalho IP
-def parse_ip_header(packet: bytes) -> Tuple[str, str, int]:
-    ip_header = struct.unpack('!BBHHHBBH4s4s', packet[:20])
-    src_ip = ip_to_str(ip_header[8])
-    dest_ip = ip_to_str(ip_header[9])
-    protocol = ip_header[6]
-    return src_ip, dest_ip, protocol
+def decode_http(data):
+    try:
+        http_data = data.decode("utf-8", errors="ignore")
+        #print(http_data)
+        if "Host:" in http_data:
+            headers = http_data.split("\r\n")
+            for header in headers:
+                if header.startswith("Host:"):
+                    return header.split(":")[1].strip()
+        return None
+    except:
+        return None
 
-# Função para extrair o cabeçalho TCP
-def parse_tcp_header(packet: bytes) -> Tuple[int, int]:
-    tcp_header = struct.unpack('!HH', packet[:4])
-    src_port = tcp_header[0]
-    dest_port = tcp_header[1]
-    return src_port, dest_port
 
-# Sniffer principal
-def start_sniffer():
-    # Cria o socket raw para pacotes IP
-    sniffer = socket.socket(socket.AF_INET, socket.SOCK_RAW, socket.IPPROTO_TCP)
-    sniffer.setsockopt(socket.IPPROTO_IP, socket.IP_HDRINCL, 1)
+# Função para criar o arquivo HTML
+def criar_arquivo_html(historico):
+    with open("historico.html", "w") as f:
+        f.write("<html>\n")
+        f.write("<head>\n")
+        f.write("<title>Histórico de Navegação</title>\n")
+        f.write("</head>\n")
+        f.write("<h1>Histórico:</h1>\n")
+        f.write("<body>\n")
+        f.write("<ul>\n")
+        for entrada in historico:
+            f.write(f"<li>{entrada['data_hora']} - {entrada['ip']} - <a href={entrada['url']}>{entrada['url']}</a></li>\n")
+        f.write("</ul>\n")
+        f.write("</body>\n")
+        f.write("</html>\n")
+    f.close()
 
-    print("Iniciando o sniffer... Pressione Ctrl+C para parar.")
-    logs = []
+# Configuração do socket raw
+def sniffer(ip_maquina_vitima):
+    historico = []
+    raw_socket = socket.socket(socket.AF_PACKET, socket.SOCK_RAW, socket.ntohs(0x0003)) # socket para receber pacotes
 
+    print("Sniffer rodando... Pressione Ctrl+C para parar.")
     try:
         while True:
-            # Recebe os pacotes
-            raw_packet, addr = sniffer.recvfrom(65535)
+            packet, addr = raw_socket.recvfrom(65535)
+            
+            # Ethernet Header
+            eth_length = 14
+            eth_header = packet[:eth_length]
+            eth_data = struct.unpack("!6s6sH", eth_header)
+            eth_protocol = eth_data[2]
 
-            # Extraindo informações do cabeçalho IP
-            ip_src, ip_dest, protocol = parse_ip_header(raw_packet[:20])
+            # Verifica se é IPv4
+            if eth_protocol == 0x0800:
+                ip_header = packet[eth_length:eth_length + 20]
+                iph = struct.unpack("!BBHHHBBH4s4s", ip_header)
 
-            # Obter o nome do host
-            host_name = get_host_name(ip_src)
+                # Obtem IP de origem
+                src_ip = socket.inet_ntoa(iph[8])
+                
+                if (src_ip != ip_maquina_vitima):
+                    continue
 
-            # Verifica se é um pacote TCP (protocolo 6)
-            if protocol == 6:
-                src_port, dest_port = parse_tcp_header(raw_packet[20:24])
+                # Verifica protocolo de transporte (TCP/UDP)
+                protocol = iph[6]
 
-                # Caso seja HTTP (porta 80) ou HTTPS (porta 443)
-                if dest_port == 80 or dest_port == 443:
-                    timestamp = datetime.datetime.now().strftime('%d/%m/%Y %H:%M')
-                    url = raw_packet[54:].decode('utf-8', 'ignore')  # Aqui poderia ser extraído de um pacote HTTP
-                    logs.append(
-                        f"<li>{timestamp} - {ip_src} - {host_name} - <a href='{url}'>{url}</a></li>"
-                    )
-                    print(f"HTTP(s) - {ip_src}:{src_port} -> {ip_dest}:{dest_port}")
+                if protocol == 6:  # TCP
+                    tcp_header = packet[eth_length + 20:eth_length + 40]
+                    tcph = struct.unpack("!HHLLBBHHH", tcp_header)
+
+                    # Porta de destino
+                    dest_port = tcph[1]
+
+                    # Verifica se é HTTP
+                    if dest_port == 80:
+                        http_data = packet[eth_length + 40:]
+                        url = decode_http(http_data)
+                        if url:
+                            historico.append({
+                                "data_hora": datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                                "ip": src_ip,
+                                "url": f"http://{url}"
+                            })
+                            print(f"[HTTP] {src_ip} -> http://{url}")
+
+                elif protocol == 17:  # UDP
+                    udp_header = packet[eth_length + 20:eth_length + 28]
+                    udph = struct.unpack("!HHHH", udp_header)
+
+                    # Porta de destino
+                    dest_port = udph[1]
+
+                    # Verifica se é DNS
+                    if dest_port == 53:
+                        #print("DNS")
+                        dns_data = packet[eth_length + 28:]
+                        domain = decode_dns(dns_data)
+                        if domain:
+                            historico.append({
+                                "data_hora": datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                                "ip": src_ip,
+                                "url": domain
+                            })
+                            print(f"[DNS] {src_ip} -> {domain}")
 
     except KeyboardInterrupt:
-        print("\nEncerrando o sniffer.")
-    finally:
-        # Gerar o arquivo HTML com os logs
-        with open("./assets/historico.html", "w") as f:
-            f.write("<html><body><h1>Histórico de Navegação</h1><ul>")
-            f.writelines(logs)
-            f.write("</ul></body></html>")
-        print("Arquivo 'history.html' gerado com sucesso!")
+        print("\nParando o sniffer...")
+        criar_arquivo_html(historico)
 
+# Executa o sniffer
 if __name__ == "__main__":
-    start_sniffer()
+    
+    if len(sys.argv) < 2:
+        print("Uso: sudo {} <ip da maquina vitima>".format(sys.argv[0]))
+        sys.exit(0)
+
+    sniffer(sys.argv[1])
