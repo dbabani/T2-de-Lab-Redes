@@ -37,7 +37,7 @@ def decode_http(data):
 
 # Função para criar o arquivo HTML
 def criar_arquivo_html(historico):
-    with open("historico.html", "w") as f:
+    with open("./assets/historico.html", "w") as f:
         f.write("<html>\n")
         f.write("<head>\n")
         f.write("<title>Histórico de Navegação</title>\n")
